@@ -30,8 +30,64 @@ SLACK_CHANNEL_ID = os.environ["SLACK_CHANNEL_ID"]
 TIMEZONE = os.environ.get("TIMEZONE", "America/New_York")
 COUNTRY_CODE = os.environ.get("COUNTRY_CODE", "")
 
-# Map of "Project Name" -> "clockify_project_id"
-CLOCKIFY_PROJECTS: dict[str, str] = json.loads(os.environ.get("CLOCKIFY_PROJECTS", "{}"))
+_RESERVED_CLOCKIFY_VARS = frozenset({
+    "CLOCKIFY_API_KEY",
+    "CLOCKIFY_WORKSPACE_ID",
+    "CLOCKIFY_PUBLICHOLIDAY",
+    "CLOCKIFY_MEETINGS",
+})
+
+_KEYWORDS_SUFFIX = "_KEYWORDS"
+
+
+def _load_clockify_projects() -> dict[str, str]:
+    """Build project-name → project-ID map.
+
+    Prefers the CLOCKIFY_PROJECTS JSON env var if set.
+    Otherwise auto-discovers CLOCKIFY_<NAME> env vars (e.g. CLOCKIFY_NHLMIS, CLOCKIFY_INFRASTRUCTURE).
+    CLOCKIFY_<NAME>_KEYWORDS vars are excluded — they're keyword hints, not project IDs.
+    """
+    explicit = os.environ.get("CLOCKIFY_PROJECTS", "").strip()
+    if explicit:
+        try:
+            return json.loads(explicit)
+        except json.JSONDecodeError:
+            logger.warning("CLOCKIFY_PROJECTS is not valid JSON — falling back to env-var discovery")
+
+    projects = {}
+    for key in sorted(os.environ):
+        if (
+            key.startswith("CLOCKIFY_")
+            and key not in _RESERVED_CLOCKIFY_VARS
+            and not key.endswith(_KEYWORDS_SUFFIX)
+        ):
+            val = os.environ[key]
+            if val:
+                projects[key[len("CLOCKIFY_"):]] = val
+    return projects
+
+
+def _load_project_keywords() -> dict[str, str]:
+    """Return project-name → keyword-hints map from CLOCKIFY_<NAME>_KEYWORDS env vars.
+
+    Example: CLOCKIFY_INFRASTRUCTURE_KEYWORDS=staging release, prod release, deployment
+    → {"INFRASTRUCTURE": "staging release, prod release, deployment"}
+    """
+    keywords = {}
+    for key, val in os.environ.items():
+        if key.startswith("CLOCKIFY_") and key.endswith(_KEYWORDS_SUFFIX) and val:
+            name = key[len("CLOCKIFY_"):-len(_KEYWORDS_SUFFIX)]
+            keywords[name] = val
+    return keywords
+
+
+CLOCKIFY_PROJECTS: dict[str, str] = _load_clockify_projects()
+PROJECT_KEYWORDS: dict[str, str] = _load_project_keywords()
+
+
+def _fallback_project_id() -> str | None:
+    """Return the first project ID in the map, used when no project matches a task."""
+    return next(iter(CLOCKIFY_PROJECTS.values()), None)
 
 
 def get_holiday_name(target_date: date) -> str | None:
@@ -180,9 +236,9 @@ def process_time_entries(text, user_id, say, target_date: date = None):
         tz = pytz.timezone(TIMEZONE)
         today = target_date or datetime.now(tz).date()
 
-        # Parse manual entries — pass project names so Gemini can assign them
+        # Parse manual entries — pass project names + keyword hints so Gemini can assign them
         project_names = list(CLOCKIFY_PROJECTS.keys()) if CLOCKIFY_PROJECTS else None
-        entries = parse_time_entries(text, project_names)
+        entries = parse_time_entries(text, project_names, project_keywords=PROJECT_KEYWORDS)
         logger.info(f"Parsed entries: {entries}")
 
         if not entries:
@@ -199,13 +255,13 @@ def process_time_entries(text, user_id, say, target_date: date = None):
 
         clockify = ClockifyClient(tz)
         logged = []
-        fallback_project = os.environ.get("CLOCKIFY_DEFAULT_PROJECT_ID")
+        fallback_project = _fallback_project_id()
 
         # Re-parse with free slots so Gemini assigns non-overlapping times
         existing_intervals = clockify.get_day_intervals(today)
         free_slots = _calculate_free_slots(existing_intervals, meetings, today, tz)
         if free_slots:
-            entries = parse_time_entries(text, project_names, free_slots=free_slots)
+            entries = parse_time_entries(text, project_names, free_slots=free_slots, project_keywords=PROJECT_KEYWORDS)
             logger.info(f"Re-parsed with {len(free_slots)} free slot(s): {entries}")
 
         # Log manual entries — use explicit times if provided, otherwise stack from 9 AM
@@ -238,7 +294,7 @@ def process_time_entries(text, user_id, say, target_date: date = None):
             cursor = max(cursor, end)
 
         # Log meetings using their real start/end times — skip any already logged today
-        meetings_project = os.environ.get("CLOCKIFY_MEETINGS_PROJECT_ID") or fallback_project
+        meetings_project = os.environ.get("CLOCKIFY_MEETINGS") or fallback_project
         existing = clockify.get_todays_descriptions(today)
         for m in meetings:
             desc = f"Meeting: {m['summary']}"
@@ -379,8 +435,8 @@ def run_backfill_with_tasks(tasks_text: str, say):
         clockify = ClockifyClient(tz)
         calendar = GoogleCalendarClient()
         project_names = list(CLOCKIFY_PROJECTS.keys()) if CLOCKIFY_PROJECTS else None
-        fallback_project = os.environ.get("CLOCKIFY_DEFAULT_PROJECT_ID")
-        meetings_project = os.environ.get("CLOCKIFY_MEETINGS_PROJECT_ID") or fallback_project
+        fallback_project = _fallback_project_id()
+        meetings_project = os.environ.get("CLOCKIFY_MEETINGS") or fallback_project
         holiday_project = os.environ.get("CLOCKIFY_PUBLICHOLIDAY")
 
         all_weekdays = []
@@ -424,7 +480,7 @@ def run_backfill_with_tasks(tasks_text: str, say):
                 no_slots.append(missed_date.strftime("%a %b %d"))
                 continue
 
-            entries = parse_time_entries(tasks_text, project_names, free_slots=free_slots)
+            entries = parse_time_entries(tasks_text, project_names, free_slots=free_slots, project_keywords=PROJECT_KEYWORDS)
             day_logged = []
 
             # Log tasks

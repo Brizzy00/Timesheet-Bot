@@ -17,7 +17,12 @@ def _get_model() -> genai.GenerativeModel:
     return _model
 
 
-def parse_time_entries(text: str, project_names: list[str] = None, free_slots: list[dict] = None) -> list[dict]:
+def parse_time_entries(
+    text: str,
+    project_names: list[str] = None,
+    free_slots: list[dict] = None,
+    project_keywords: dict[str, str] = None,
+) -> list[dict]:
     """
     Ask Gemini to turn a free-text work log into structured time entries.
     Returns a list of dicts with keys:
@@ -26,10 +31,16 @@ def parse_time_entries(text: str, project_names: list[str] = None, free_slots: l
     """
     projects_section = ""
     if project_names:
-        names = ", ".join(f'"{p}"' for p in project_names)
+        lines = []
+        for p in project_names:
+            hints = (project_keywords or {}).get(p, "")
+            if hints:
+                lines.append(f'  - "{p}" — typically used for: {hints}')
+            else:
+                lines.append(f'  - "{p}"')
         projects_section = (
-            f"\nAvailable projects: {names}\n"
-            "For each entry, pick the best matching project from that list. "
+            "\nAvailable projects:\n" + "\n".join(lines) + "\n"
+            "For each entry, pick the best matching project from that list using the name and hints above. "
             'Include it as the "project" field (exact name from the list, or null if none fit).'
         )
 
