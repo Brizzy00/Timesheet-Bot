@@ -2,23 +2,24 @@ import os
 import json
 import logging
 from datetime import date
-import anthropic
+import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
-_client: anthropic.Anthropic | None = None
+_model: genai.GenerativeModel | None = None
 
 
-def _get_client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    return _client
+def _get_model() -> genai.GenerativeModel:
+    global _model
+    if _model is None:
+        genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+        _model = genai.GenerativeModel("gemini-1.5-flash")
+    return _model
 
 
 def parse_time_entries(text: str, work_date: date) -> list[dict]:
     """
-    Ask Claude to turn a free-text work log into structured time entries.
+    Ask Gemini to turn a free-text work log into structured time entries.
     Returns a list of dicts with keys: description, duration_minutes, duration_str.
     """
     prompt = f"""Parse this work log into structured time entries.
@@ -40,17 +41,13 @@ Rules:
 Example: [{{"description": "Fixed login bug", "duration_minutes": 120, "duration_str": "2h"}}]"""
 
     try:
-        msg = _get_client().messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = msg.content[0].text.strip()
+        response = _get_model().generate_content(prompt)
+        raw = response.text.strip()
         # Strip optional markdown code fences
         if raw.startswith("```"):
             parts = raw.split("```")
             raw = parts[1].lstrip("json").strip() if len(parts) > 1 else raw
         return json.loads(raw)
     except Exception as e:
-        logger.error(f"AI parse failed: {e}")
+        logger.error(f"Gemini parse failed: {e}")
         return []
