@@ -73,6 +73,7 @@ Rules:
 - "1h" = 60 min, "30m" or "30min" = 30, "1.5h" = 90, "half hour" = 30
 - Time ranges like "from 10:30 to 17:00" or "10:30 - 17:00":
     → start_time="10:30", end_time="17:00", duration_minutes=390
+- If a task has NO explicit duration, assign it duration_minutes=60 as a placeholder (it will be scaled later)
 - If free slots are given, assign every task a start_time and end_time that fits within a slot
 - Tasks must not overlap with each other
 - If no slots are given and no explicit time, set start_time and end_time to null
@@ -80,10 +81,19 @@ Rules:
 - Exclude meetings — those are pulled from calendar automatically
 - Return ONLY valid JSON, no markdown or extra text
 
-Example:
+Examples:
+
+With explicit durations:
 [
   {{"description": "UAT testing", "duration_minutes": 390, "duration_str": "6h 30m", "project": "QA Testing", "start_time": "10:30", "end_time": "17:00"}},
   {{"description": "Fixed login bug", "duration_minutes": 120, "duration_str": "2h", "project": "Development", "start_time": "09:00", "end_time": "11:00"}}
+]
+
+With no explicit durations (placeholder 60 min each):
+[
+  {{"description": "Regression test for PSM", "duration_minutes": 60, "duration_str": "1h", "project": "QA Testing", "start_time": null, "end_time": null}},
+  {{"description": "Regression test for RMS", "duration_minutes": 60, "duration_str": "1h", "project": "QA Testing", "start_time": null, "end_time": null}},
+  {{"description": "Testing assigned tickets", "duration_minutes": 60, "duration_str": "1h", "project": "QA Testing", "start_time": null, "end_time": null}}
 ]"""
 
     try:

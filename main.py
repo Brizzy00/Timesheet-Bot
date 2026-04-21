@@ -503,7 +503,7 @@ def run_backfill_with_tasks(tasks_text: str, say):
         # Parse tasks ONCE with Gemini — reuse for every day to stay within free-tier rate limits
         base_entries = parse_time_entries(tasks_text, project_names, project_keywords=PROJECT_KEYWORDS)
         if not base_entries:
-            say(":thinking_face: Couldn't parse those tasks. Try: _'bug fixes, code review, testing'_")
+            say(":thinking_face: Couldn't parse those tasks. Try listing them comma-separated, e.g.:\n> `/backfill Regression testing, bug fixes, code review`")
             return
 
         say(f":calendar: Found *{len(missed_days)} missed day(s)*. Logging now…")
