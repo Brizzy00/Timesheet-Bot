@@ -156,6 +156,11 @@ class ClockifyClient:
         if end.tzinfo is None:
             end = self.tz.localize(end)
 
+        # Guard against invalid time ranges
+        if end <= start:
+            logger.error(f"Skipping '{description}': end ({end}) is not after start ({start})")
+            return None
+
         start_utc = start.astimezone(pytz.UTC)
         end_utc = end.astimezone(pytz.UTC)
 
@@ -167,6 +172,8 @@ class ClockifyClient:
         }
         if project_id:
             payload["projectId"] = project_id
+
+        logger.debug(f"Clockify payload: {payload}")
 
         try:
             resp = requests.post(
@@ -181,5 +188,5 @@ class ClockifyClient:
                 self._todays_descriptions.add(description)
             return resp.json()
         except requests.RequestException as e:
-            logger.error(f"Clockify error for '{description}': {e}")
+            logger.error(f"Clockify error for '{description}': {e} — response: {getattr(e.response, 'text', 'n/a')}")
             return None
