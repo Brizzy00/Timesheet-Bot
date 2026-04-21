@@ -394,10 +394,11 @@ def run_backfill(say):
                 all_weekdays.append(current)
             current += timedelta(days=1)
 
-        dates_with_entries = clockify.get_dates_with_entries(start_of_year, yesterday)
-        missed_days = [d for d in all_weekdays if d not in dates_with_entries]
+        logged_minutes = clockify.get_date_logged_minutes(start_of_year, yesterday)
+        # A day needs filling if it has less than 8 hours (480 min) logged
+        incomplete_days = [d for d in all_weekdays if logged_minutes.get(d, 0) < 8 * 60]
 
-        if not missed_days:
+        if not incomplete_days:
             say(":white_check_mark: No missed days — you're all caught up!")
             return
 
@@ -405,7 +406,7 @@ def run_backfill(say):
         holidays_logged = []
         lines = []
 
-        for missed_date in missed_days:
+        for missed_date in incomplete_days:
             # Auto-log public holidays — no user input needed
             holiday_name = get_holiday_name(missed_date)
             if holiday_name:
@@ -420,21 +421,23 @@ def run_backfill(say):
                 holidays_logged.append(f"• *{missed_date.strftime('%a %b %d')}* — {holiday_name}")
                 continue
 
-            # Regular missed day — report it for manual entry
+            # Regular incomplete day — report it for manual entry
             meetings = calendar.get_meetings_for_date(missed_date, TIMEZONE)
-            meeting_minutes = sum(m["duration_minutes"] for m in meetings)
-            unfilled_minutes = max((8 * 60) - meeting_minutes, 0)
-            h, m = divmod(unfilled_minutes, 60)
-            unfilled_str = f"{h}h {m}m" if m else f"{h}h"
+            already_logged = logged_minutes.get(missed_date, 0)
+            # unfilled = 8h target minus what's already in Clockify (meetings included if already logged)
+            unfilled_minutes = max((8 * 60) - already_logged, 0)
+            unfilled_str = _fmt_duration(unfilled_minutes)
+
+            already_str = f"{_fmt_duration(already_logged)} already logged, " if already_logged else ""
 
             if meetings:
                 meeting_summary = ", ".join(f"{m['summary']} ({m['duration_str']})" for m in meetings)
-                calendar_note = f"_Calendar: {meeting_summary} — added automatically_"
+                calendar_note = f"_Calendar: {meeting_summary} — added automatically on top_"
             else:
                 calendar_note = "_No meetings on calendar_"
 
             lines.append(
-                f"• *{missed_date.strftime('%a %b %d')}* — *{unfilled_str}* to fill\n"
+                f"• *{missed_date.strftime('%a %b %d')}* — {already_str}*{unfilled_str}* to fill (9am–5pm)\n"
                 f"  {calendar_note}"
             )
 
@@ -490,8 +493,8 @@ def run_backfill_with_tasks(tasks_text: str, say):
                 all_weekdays.append(current)
             current += timedelta(days=1)
 
-        dates_with_entries = clockify.get_dates_with_entries(start_of_year, yesterday)
-        missed_days = [d for d in all_weekdays if d not in dates_with_entries]
+        logged_minutes = clockify.get_date_logged_minutes(start_of_year, yesterday)
+        missed_days = [d for d in all_weekdays if logged_minutes.get(d, 0) < 8 * 60]
 
         if not missed_days:
             say(":white_check_mark: No missed days — you're all caught up!")

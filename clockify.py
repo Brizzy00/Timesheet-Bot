@@ -97,10 +97,11 @@ class ClockifyClient:
 
         return self._todays_descriptions
 
-    def get_dates_with_entries(self, start_date: date, end_date: date) -> set[date]:
+    def get_date_logged_minutes(self, start_date: date, end_date: date) -> dict[date, int]:
         """
-        Return the set of local dates that have at least one time entry
-        in the given range. Handles Clockify pagination automatically.
+        Return a dict of local-date → total minutes logged across all entries in the range.
+        Only dates with at least one completed entry appear in the dict.
+        Handles Clockify pagination automatically.
         """
         range_start = self.tz.localize(
             datetime.combine(start_date, datetime.min.time())
@@ -110,7 +111,7 @@ class ClockifyClient:
         ).astimezone(pytz.UTC)
 
         user_id = self._get_user_id()
-        dates_found: set[date] = set()
+        minutes_by_date: dict[date, int] = {}
         page = 1
 
         while True:
@@ -133,16 +134,21 @@ class ClockifyClient:
                 break
 
             for entry in batch:
-                start_str = (entry.get("timeInterval") or {}).get("start", "")
-                if start_str:
-                    entry_utc = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-                    dates_found.add(entry_utc.astimezone(self.tz).date())
+                interval = entry.get("timeInterval") or {}
+                start_str = interval.get("start", "")
+                end_str = interval.get("end", "")
+                if start_str and end_str:
+                    entry_start = datetime.fromisoformat(start_str.replace("Z", "+00:00")).astimezone(self.tz)
+                    entry_end = datetime.fromisoformat(end_str.replace("Z", "+00:00")).astimezone(self.tz)
+                    day = entry_start.date()
+                    duration_mins = max(0, int((entry_end - entry_start).total_seconds() / 60))
+                    minutes_by_date[day] = minutes_by_date.get(day, 0) + duration_mins
 
             if len(batch) < 200:
                 break
             page += 1
 
-        return dates_found
+        return minutes_by_date
 
     def create_entry(
         self,
