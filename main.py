@@ -195,6 +195,50 @@ def _calculate_free_slots(existing_intervals, meetings, work_date: date, tz) -> 
     return free
 
 
+def _fit_tasks_into_slots(base_entries: list[dict], free_slots: list[dict], work_date: date, tz) -> list[tuple]:
+    """
+    Proportionally scale task durations to fill the available free slots without calling Gemini.
+    Returns a list of (entry_dict, start_datetime, end_datetime) tuples.
+    Tasks that span a slot boundary are split across slots with the same description.
+    """
+    if not base_entries or not free_slots:
+        return []
+
+    total_free_minutes = sum(
+        int((datetime.strptime(s["end"], "%H:%M") - datetime.strptime(s["start"], "%H:%M")).total_seconds() / 60)
+        for s in free_slots
+    )
+    total_task_minutes = sum(e.get("duration_minutes", 0) for e in base_entries)
+    if total_task_minutes == 0 or total_free_minutes == 0:
+        return []
+
+    scale = total_free_minutes / total_task_minutes
+    scaled = [max(1, round(e["duration_minutes"] * scale)) for e in base_entries]
+
+    results = []
+    task_idx = 0
+    task_remaining = scaled[0]
+
+    for slot in free_slots:
+        cursor = tz.localize(datetime.combine(work_date, datetime.strptime(slot["start"], "%H:%M").time()))
+        slot_end = tz.localize(datetime.combine(work_date, datetime.strptime(slot["end"], "%H:%M").time()))
+
+        while task_idx < len(base_entries) and cursor < slot_end:
+            available = int((slot_end - cursor).total_seconds() / 60)
+            use_mins = min(task_remaining, available)
+            entry_end = cursor + timedelta(minutes=use_mins)
+            results.append((base_entries[task_idx], cursor, entry_end))
+            task_remaining -= use_mins
+            cursor = entry_end
+
+            if task_remaining <= 0:
+                task_idx += 1
+                if task_idx < len(base_entries):
+                    task_remaining = scaled[task_idx]
+
+    return results
+
+
 def parse_date_prefix(text: str, tz) -> tuple[date, str]:
     """
     Extract an optional date prefix from the command text.
@@ -453,6 +497,12 @@ def run_backfill_with_tasks(tasks_text: str, say):
             say(":white_check_mark: No missed days — you're all caught up!")
             return
 
+        # Parse tasks ONCE with Gemini — reuse for every day to stay within free-tier rate limits
+        base_entries = parse_time_entries(tasks_text, project_names, project_keywords=PROJECT_KEYWORDS)
+        if not base_entries:
+            say(":thinking_face: Couldn't parse those tasks. Try: _'bug fixes, code review, testing'_")
+            return
+
         say(f":calendar: Found *{len(missed_days)} missed day(s)*. Logging now…")
 
         filled_days = []
@@ -480,27 +530,15 @@ def run_backfill_with_tasks(tasks_text: str, say):
                 no_slots.append(missed_date.strftime("%a %b %d"))
                 continue
 
-            entries = parse_time_entries(tasks_text, project_names, free_slots=free_slots, project_keywords=PROJECT_KEYWORDS)
+            # Distribute tasks across this day's free slots in code — no extra Gemini call needed
+            fitted = _fit_tasks_into_slots(base_entries, free_slots, missed_date, tz)
             day_logged = []
 
-            # Log tasks
-            cursor = tz.localize(datetime.combine(missed_date, datetime.min.time()).replace(hour=9))
-            for entry in entries:
-                try:
-                    if entry.get("start_time") and entry.get("end_time"):
-                        start = tz.localize(datetime.combine(missed_date, datetime.strptime(entry["start_time"], "%H:%M").time()))
-                        end = tz.localize(datetime.combine(missed_date, datetime.strptime(entry["end_time"], "%H:%M").time()))
-                    else:
-                        start = cursor
-                        end = cursor + timedelta(minutes=entry["duration_minutes"])
-                except ValueError:
-                    start = cursor
-                    end = cursor + timedelta(minutes=entry["duration_minutes"])
-
+            for entry, start, end in fitted:
                 project_id = CLOCKIFY_PROJECTS.get(entry.get("project", ""), fallback_project)
+                duration_str = _fmt_duration(int((end - start).total_seconds() / 60))
                 if clockify.create_entry(entry["description"], start, end, project_id):
-                    day_logged.append(f"  _{entry['description']} — {entry['duration_str']}_")
-                cursor = max(cursor, end)
+                    day_logged.append(f"  _{entry['description']} — {duration_str}_")
 
             # Log meetings
             for m in meetings:
