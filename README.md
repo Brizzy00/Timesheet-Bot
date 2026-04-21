@@ -1,13 +1,25 @@
 # Daily Timesheet Bot
 
-A Slack bot that messages you every weekday at 4:45 PM, asks what you worked on, and automatically logs your tasks and calendar meetings to Clockify.
+A Slack bot that messages you every weekday at 4:45 PM and automatically logs your tasks and Google Calendar meetings to Clockify.
 
 **How it works:**
-1. Bot DMs you at 4:45 PM — "What did you work on today?"
-2. You reply naturally: `2h fixing the login bug, 1h code review, 30min planning`
-3. Gemini AI parses your message into structured time entries
-4. Bot pulls your Google Calendar meetings for the day
-5. Everything gets logged to Clockify — tasks and meetings
+1. Bot posts in your Slack channel at 4:45 PM — "What did you work on today?"
+2. You reply with `/timesheet 2h fixing the login bug, 1h code review, 30min planning`
+3. Gemini AI parses your message and assigns each task to the right Clockify project
+4. Bot pulls your Google Calendar meetings for the day and logs those too
+5. Everything lands in Clockify — tasks and meetings combined
+
+---
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `/timesheet 2h bug fixes, 1h review` | Log time for today |
+| `/timesheet yesterday 2h testing` | Log time for yesterday |
+| `/timesheet monday 3h QA, 1h standup` | Log time for the most recent Monday |
+| `/timesheet 2025-01-06 2h regression` | Log time for a specific date |
+| `/backfill` | Scan for missed days since Jan 1 and show what's missing |
 
 ---
 
@@ -102,14 +114,14 @@ A browser window opens — sign in and allow access. The script prints a JSON bl
 |---|---|
 | `SLACK_BOT_TOKEN` | `xoxb-...` |
 | `SLACK_SIGNING_SECRET` | `...` |
-| `SLACK_USER_ID` | `U...` |
+| `SLACK_USER_ID` | `U...` — your personal Slack user ID |
 | `SLACK_CHANNEL_ID` | `C...` — channel where the bot posts the daily prompt |
 | `CLOCKIFY_API_KEY` | `...` |
 | `CLOCKIFY_WORKSPACE_ID` | `...` |
 | `CLOCKIFY_DEFAULT_PROJECT_ID` | Fallback project when no name matches |
 | `CLOCKIFY_MEETINGS_PROJECT_ID` | Project for calendar meetings |
 | `CLOCKIFY_PROJECTS` | JSON map of project names → IDs (see below) |
-| `GOOGLE_TOKEN_JSON` | `{"token":"..."}` |
+| `GOOGLE_TOKEN_JSON` | `{"token":"..."}` printed by setup script |
 | `GEMINI_API_KEY` | `...` |
 | `TIMEZONE` | e.g. `Africa/Lagos` |
 
@@ -117,56 +129,72 @@ A browser window opens — sign in and allow access. The script prints a JSON bl
 
 **Setting up `CLOCKIFY_PROJECTS`:**
 
-Add a JSON map of your project names to their Clockify IDs. Get a project ID from the Clockify URL when you open a project (`clockify.me/workspaces/.../projects/PROJECT_ID/...`).
+Add a JSON map of your project names to their Clockify IDs. Get a project ID from the Clockify URL when viewing a project.
 
 ```
 CLOCKIFY_PROJECTS={"QA Testing": "abc123", "Development": "def456", "Admin": "ghi789"}
 ```
 
-Gemini will automatically assign each logged task to the right project based on what you wrote. Tasks that don't match any project fall back to `CLOCKIFY_DEFAULT_PROJECT_ID`. You can add as many projects as you like.
+Gemini automatically assigns each task to the right project. Tasks that don't match fall back to `CLOCKIFY_DEFAULT_PROJECT_ID`. Add as many projects as you like.
 
 ---
 
 ### Step 5b — Add the Bot to Your Channel
 
 1. In Slack, open the channel you want the bot to post in
-2. Click the channel name at the top → **Integrations** → **Add an App**
-3. Find your bot and add it
-4. Get the Channel ID: right-click the channel name → **Copy Link** — the ID is the part starting with `C` at the end of the URL
-   → Save it as `SLACK_CHANNEL_ID`
+2. Click the channel name → **Integrations** → **Add an App** → find and add your bot
+3. Get the Channel ID: right-click the channel → **Copy Link** — the ID starts with `C` at the end of the URL → save as `SLACK_CHANNEL_ID`
 
 ---
 
 ### Step 6 — Connect Slack to Railway
 
-1. Go back to your Slack app at [api.slack.com/apps](https://api.slack.com/apps)
-2. Click **Event Subscriptions** → toggle **Enable Events** ON
-3. Set the Request URL to:
-   ```
-   https://YOUR-RAILWAY-URL.railway.app/slack/events
-   ```
-   Wait for the green **Verified** checkmark
-4. Under **Subscribe to bot events** → add `message.im`
-5. **Save Changes** and reinstall the app if prompted
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → your app → **Event Subscriptions**
+   - Toggle **Enable Events** ON
+   - Set Request URL to `https://YOUR-RAILWAY-URL.railway.app/slack/events`
+   - Wait for the green **Verified** checkmark
+   - Under **Subscribe to bot events** → add `message.im`
+   - **Save Changes** and reinstall if prompted
 
-6. Click **Slash Commands** in the sidebar → **Create New Command**
-   - Command: `/timesheet`
-   - Request URL: `https://YOUR-RAILWAY-URL.railway.app/slack/commands`
-   - Description: `Log your time to Clockify`
-   - Usage hint: `2h bug fixes, 1h code review`
-   - Save, then reinstall the app if prompted
+2. Go to **Slash Commands** → **Create New Command**:
+
+   | Field | Value |
+   |---|---|
+   | Command | `/timesheet` |
+   | Request URL | `https://YOUR-RAILWAY-URL.railway.app/slack/commands` |
+   | Description | `Log your time to Clockify` |
+   | Usage hint | `2h bug fixes, 1h review \| yesterday 2h testing \| 2025-01-06 3h QA` |
+
+3. **Create another New Command** for backfill:
+
+   | Field | Value |
+   |---|---|
+   | Command | `/backfill` |
+   | Request URL | `https://YOUR-RAILWAY-URL.railway.app/slack/commands` |
+   | Description | `Find and fill missed Clockify days since Jan 1` |
+   | Usage hint | *(leave empty)* |
+
+4. Save and reinstall the app if prompted
 
 ---
 
 ### Step 7 — Test It
 
-Open Slack and DM your bot:
-
+**Log today's time:**
 ```
-2h writing test cases, 1h bug bash, 30min standup
+/timesheet 2h writing test cases, 1h bug bash, 30min standup
 ```
 
-The bot will reply with a Clockify confirmation listing all logged entries. At **4:45 PM on weekdays** it will message you automatically.
+**Find and fill missed days:**
+```
+/backfill
+```
+The bot lists every weekday since Jan 1 with no Clockify entries, showing hours missing and any calendar meetings already on those days. Then log each missed day with:
+```
+/timesheet 2025-01-06 2h regression testing, 3h bug fixes
+```
+
+At **4:45 PM on weekdays** the bot will automatically prompt you in your channel.
 
 ---
 
@@ -188,10 +216,13 @@ daily-timesheet-bot/
 
 ## Troubleshooting
 
-**Bot not responding in Slack**
+**Bot not posting in the channel**
+- Make sure the bot is added to the channel (channel settings → Integrations → Add an App)
+- Confirm `SLACK_CHANNEL_ID` is correct (should start with `C`)
+
+**Slash commands not working**
+- Verify the Request URL is verified in Slack (green checkmark)
 - Check Railway logs for errors
-- Make sure the Event Subscriptions URL is verified in Slack
-- Confirm `SLACK_USER_ID` matches your actual Slack ID
 
 **Clockify entries not appearing**
 - Double-check `CLOCKIFY_WORKSPACE_ID` (look at the URL in Clockify)

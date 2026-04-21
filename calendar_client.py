@@ -64,6 +64,15 @@ class GoogleCalendarClient:
             if "dateTime" not in start_raw:
                 continue
 
+            # Skip events the user declined
+            attendees = event.get("attendees", [])
+            my_response = next(
+                (a.get("responseStatus") for a in attendees if a.get("self")),
+                None,  # no attendees = self-created event, always include
+            )
+            if my_response == "declined":
+                continue
+
             start_dt = _parse_dt(start_raw["dateTime"], tz)
             end_dt = _parse_dt(end_raw["dateTime"], tz)
             duration_min = int((end_dt - start_dt).total_seconds() / 60)

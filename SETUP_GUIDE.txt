@@ -4,10 +4,18 @@
 
 WHAT IT DOES
 ------------
-Every weekday at 4:45 PM, the bot DMs you on Slack and asks
-what you worked on. You reply naturally (e.g. "2h fixing bugs,
-1h code review") and it logs everything to Clockify. It also
-pulls your Google Calendar meetings and logs those automatically.
+Every weekday at 4:45 PM, the bot posts in your Slack channel
+and asks what you worked on. You reply with /timesheet and it
+logs your tasks to Clockify. It also pulls your Google Calendar
+meetings and logs those automatically.
+
+COMMANDS
+--------
+/timesheet 2h bug fixes, 1h review        Log time for today
+/timesheet yesterday 2h testing            Log time for yesterday
+/timesheet monday 3h QA, 1h standup        Log time for last Monday
+/timesheet 2025-01-06 2h regression        Log time for a specific date
+/backfill                                   Find missed days since Jan 1
 
 
 PREREQUISITES
@@ -66,13 +74,20 @@ STEP 2 — GET CLOCKIFY CREDENTIALS
    clockify.me/workspaces/WORKSPACE_ID/...
    → Save it as: CLOCKIFY_WORKSPACE_ID
 
-3. (Optional) To assign entries to a project:
+3. (Optional) Fallback project for tasks with no matching name:
    → Open a project in Clockify — the ID is in the URL
    → Save it as: CLOCKIFY_DEFAULT_PROJECT_ID
 
-4. (Optional) For a separate project just for meetings:
+4. (Optional) Separate project for calendar meetings:
    → Same as above for your meetings project
    → Save it as: CLOCKIFY_MEETINGS_PROJECT_ID
+
+5. (Optional) Map project names to IDs so Gemini can auto-assign:
+   → Build a JSON map like this:
+      CLOCKIFY_PROJECTS={"QA Testing": "id1", "Development": "id2"}
+   → Get project IDs from the Clockify URL when viewing a project
+   → Gemini reads your task description and picks the right project
+   → Save it as: CLOCKIFY_PROJECTS
 
 
 ================================================================
@@ -131,52 +146,89 @@ STEP 5 — DEPLOY TO RAILWAY
 3. Once deployed, go to your service → "Variables" tab
    → Add all of the following environment variables:
 
-      SLACK_BOT_TOKEN         = xoxb-...
-      SLACK_SIGNING_SECRET    = ...
-      SLACK_USER_ID           = U...
-      CLOCKIFY_API_KEY        = ...
-      CLOCKIFY_WORKSPACE_ID   = ...
+      SLACK_BOT_TOKEN              = xoxb-...
+      SLACK_SIGNING_SECRET         = ...
+      SLACK_USER_ID                = U...  (your Slack user ID)
+      SLACK_CHANNEL_ID             = C...  (channel for daily prompt)
+      CLOCKIFY_API_KEY             = ...
+      CLOCKIFY_WORKSPACE_ID        = ...
       CLOCKIFY_DEFAULT_PROJECT_ID  = (optional)
       CLOCKIFY_MEETINGS_PROJECT_ID = (optional)
-      GOOGLE_TOKEN_JSON       = {"token":"..."}
-      GEMINI_API_KEY          = ...
-      TIMEZONE                = Africa/Lagos
+      CLOCKIFY_PROJECTS            = {"QA Testing": "id1", ...} (optional)
+      GOOGLE_TOKEN_JSON            = {"token":"..."} (from setup script)
+      GEMINI_API_KEY               = ...
+      TIMEZONE                     = Africa/Lagos
 
 4. Go to "Settings" → "Networking" → "Generate Domain"
    → Copy the public URL (e.g. https://my-bot.railway.app)
 
 
 ================================================================
+STEP 5b — ADD THE BOT TO YOUR CHANNEL
+================================================================
+
+1. Open the Slack channel where you want the bot to post
+
+2. Click the channel name at the top → "Integrations"
+   → "Add an App" → find and add your bot
+
+3. Get the Channel ID:
+   → Right-click the channel name → "Copy Link"
+   → The ID starts with "C" at the end of the URL
+   → Save it as: SLACK_CHANNEL_ID
+
+
+================================================================
 STEP 6 — CONNECT SLACK TO RAILWAY
 ================================================================
 
-1. Go back to your Slack app at https://api.slack.com/apps
-
-2. Click "Event Subscriptions" in the sidebar
+1. Go to https://api.slack.com/apps → your app
+   → Click "Event Subscriptions"
    → Toggle "Enable Events" ON
    → Set Request URL to:
       https://YOUR-RAILWAY-URL.railway.app/slack/events
    → Wait for the green "Verified" checkmark
+   → Under "Subscribe to bot events" → Add: message.im
+   → Click "Save Changes" and reinstall if prompted
 
-3. Under "Subscribe to bot events" → Add:
-      message.im
+2. Click "Slash Commands" → "Create New Command"
 
-4. Click "Save Changes"
-   → Reinstall the app if prompted
+   Command:      /timesheet
+   Request URL:  https://YOUR-RAILWAY-URL.railway.app/slack/commands
+   Description:  Log your time to Clockify
+   Usage hint:   2h bug fixes, 1h review | yesterday 2h testing | 2025-01-06 3h QA
+
+   → Save
+
+3. Create another New Command for backfill:
+
+   Command:      /backfill
+   Request URL:  https://YOUR-RAILWAY-URL.railway.app/slack/commands
+   Description:  Find and fill missed Clockify days since Jan 1
+   Usage hint:   (leave empty)
+
+   → Save and reinstall the app if prompted
 
 
 ================================================================
 STEP 7 — TEST IT
 ================================================================
 
-Open Slack and send a DM to your bot:
+Log today's time:
+   /timesheet 2h writing test cases, 1h bug bash, 30min standup
 
-   "2h writing test cases, 1h bug bash, 30min standup"
+The bot replies with a Clockify confirmation listing all logged
+entries including calendar meetings from today.
 
-The bot should reply with a Clockify confirmation listing
-all logged entries including any calendar meetings from today.
+Find and fill missed days:
+   /backfill
 
-At 4:45 PM on weekdays it will message you automatically.
+The bot lists every weekday since Jan 1 with no Clockify entries,
+showing hours missing and any calendar meetings already on those
+days. Then log each missed day like this:
+   /timesheet 2025-01-06 2h regression testing, 3h bug fixes
+
+At 4:45 PM on weekdays the bot will prompt you automatically.
 
 
 ================================================================
@@ -199,10 +251,14 @@ daily-timesheet-bot/
 TROUBLESHOOTING
 ================================================================
 
-Bot not responding in Slack?
+Bot not posting in the channel?
+  → Make sure the bot is added to the channel
+     (channel settings → Integrations → Add an App)
+  → Confirm SLACK_CHANNEL_ID is correct (starts with C)
+
+Slash commands not working?
+  → Verify the Request URL shows a green checkmark in Slack
   → Check Railway logs for errors
-  → Make sure Event Subscriptions URL is verified in Slack
-  → Confirm SLACK_USER_ID matches your actual Slack ID
 
 Clockify entries not appearing?
   → Double-check CLOCKIFY_WORKSPACE_ID (check the URL)
