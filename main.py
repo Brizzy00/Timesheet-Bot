@@ -527,6 +527,7 @@ def run_backfill_with_tasks(tasks_text: str, say):
 
             meetings = calendar.get_meetings_for_date(missed_date, TIMEZONE)
             existing_intervals = clockify.get_day_intervals(missed_date)
+            existing_descriptions = clockify.get_todays_descriptions(missed_date)
             free_slots = _calculate_free_slots(existing_intervals, meetings, missed_date, tz)
 
             if not free_slots:
@@ -538,14 +539,25 @@ def run_backfill_with_tasks(tasks_text: str, say):
             day_logged = []
 
             for entry, start, end in fitted:
-                project_id = CLOCKIFY_PROJECTS.get(entry.get("project", ""), fallback_project)
+                desc = entry["description"]
+                if desc in existing_descriptions:
+                    logger.info(f"Skipping duplicate task entry: {desc} on {missed_date}")
+                    continue
+                matched_project = entry.get("project") or ""
+                project_id = CLOCKIFY_PROJECTS.get(matched_project) or fallback_project
+                if not matched_project:
+                    logger.warning(f"No project matched for '{desc}' — using fallback. Set CLOCKIFY_<NAME>_KEYWORDS to improve matching.")
                 duration_str = _fmt_duration(int((end - start).total_seconds() / 60))
-                if clockify.create_entry(entry["description"], start, end, project_id):
-                    day_logged.append(f"  _{entry['description']} — {duration_str}_")
+                if clockify.create_entry(desc, start, end, project_id):
+                    day_logged.append(f"  _{desc} — {duration_str} ({matched_project or 'fallback project'})_")
 
-            # Log meetings
+            # Log meetings — skip any already in Clockify for this day
             for m in meetings:
-                if clockify.create_entry(f"Meeting: {m['summary']}", m["start_dt"], m["end_dt"], meetings_project):
+                desc = f"Meeting: {m['summary']}"
+                if desc in existing_descriptions:
+                    logger.info(f"Skipping duplicate meeting: {desc} on {missed_date}")
+                    continue
+                if clockify.create_entry(desc, m["start_dt"], m["end_dt"], meetings_project):
                     day_logged.append(f"  _Meeting: {m['summary']} — {m['duration_str']}_")
 
             if day_logged:

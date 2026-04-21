@@ -20,7 +20,7 @@ class ClockifyClient:
             "Content-Type": "application/json",
         }
         self._user_id: str | None = None
-        self._todays_descriptions: set | None = None
+        self._descriptions_by_date: dict[date, set] = {}
 
     def _get_user_id(self) -> str:
         if self._user_id is None:
@@ -68,8 +68,8 @@ class ClockifyClient:
 
     def get_todays_descriptions(self, work_date: date) -> set[str]:
         """Return the set of entry descriptions already logged on work_date."""
-        if self._todays_descriptions is not None:
-            return self._todays_descriptions
+        if work_date in self._descriptions_by_date:
+            return self._descriptions_by_date[work_date]
 
         day_start = self.tz.localize(
             datetime.combine(work_date, datetime.min.time())
@@ -90,12 +90,12 @@ class ClockifyClient:
                 timeout=10,
             )
             resp.raise_for_status()
-            self._todays_descriptions = {e.get("description", "") for e in resp.json()}
+            self._descriptions_by_date[work_date] = {e.get("description", "") for e in resp.json()}
         except requests.RequestException as e:
             logger.error(f"Failed to fetch today's Clockify entries: {e}")
-            self._todays_descriptions = set()
+            self._descriptions_by_date[work_date] = set()
 
-        return self._todays_descriptions
+        return self._descriptions_by_date[work_date]
 
     def get_date_logged_minutes(self, start_date: date, end_date: date) -> dict[date, int]:
         """
@@ -190,8 +190,9 @@ class ClockifyClient:
             )
             resp.raise_for_status()
             logger.info(f"Clockify entry created: {description}")
-            if self._todays_descriptions is not None:
-                self._todays_descriptions.add(description)
+            entry_date = start.astimezone(self.tz).date()
+            if entry_date in self._descriptions_by_date:
+                self._descriptions_by_date[entry_date].add(description)
             return resp.json()
         except requests.RequestException as e:
             logger.error(f"Clockify error for '{description}': {e} — response: {getattr(e.response, 'text', 'n/a')}")

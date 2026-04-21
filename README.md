@@ -7,7 +7,7 @@ A Slack bot that messages you every weekday at 4:45 PM and automatically logs yo
 2. You reply with `/timesheet 2h fixing the login bug, 1h code review, 30min planning`
 3. Gemini AI parses your message and assigns each task to the right Clockify project
 4. Bot pulls your Google Calendar meetings for the day and logs those too
-5. Everything lands in Clockify — tasks and meetings combined
+5. Everything lands in Clockify — tasks and meetings combined, no overlapping times
 
 ---
 
@@ -19,8 +19,14 @@ A Slack bot that messages you every weekday at 4:45 PM and automatically logs yo
 | `/timesheet yesterday 2h testing` | Log time for yesterday |
 | `/timesheet monday 3h QA, 1h standup` | Log time for the most recent Monday |
 | `/timesheet 2025-01-06 2h regression` | Log time for a specific date |
-| `/backfill` | Scan for missed days since Jan 1 and show what's missing |
-| `/backfill bug fixes, code review, testing` | Auto-fill all missed days using those tasks — Gemini distributes them across free slots |
+| `/backfill` | Scan since Jan 1 — lists every day with less than 8h logged |
+| `/backfill Regression testing, bug fixes, code review` | Auto-fill all incomplete days using those tasks |
+
+**Notes on `/backfill`:**
+- A day is considered incomplete if it has **less than 8 hours** logged (not just missing entirely)
+- When filling, tasks are distributed proportionally across the free 9am–5pm slots for each day
+- Calendar meetings are added automatically and duplicates are skipped
+- Public holidays are logged automatically to your holiday project
 
 ---
 
@@ -69,8 +75,14 @@ A Slack bot that messages you every weekday at 4:45 PM and automatically logs yo
 
 1. Log into Clockify → avatar → **Profile Settings** → **API** tab → copy your API key → save as `CLOCKIFY_API_KEY`
 2. Your **Workspace ID** is in the URL: `clockify.me/workspaces/WORKSPACE_ID/...` → save as `CLOCKIFY_WORKSPACE_ID`
-3. *(Optional)* Open a project in Clockify — the ID is in the URL → save as `CLOCKIFY_DEFAULT_PROJECT_ID`
-4. *(Optional)* Do the same for a meetings-specific project → save as `CLOCKIFY_MEETINGS_PROJECT_ID`
+3. For each of your Clockify projects, get the project ID from the URL and add it as `CLOCKIFY_<NAME>=<project_id>` — for example:
+   - `CLOCKIFY_NHLMIS=686698e2dcbebb4dffba691d`
+   - `CLOCKIFY_INFRASTRUCTURE=6867e8cf3aa1ec7de112cf16`
+   - `CLOCKIFY_SHELFLIFE=68a2f87ab968421b4c697d80`
+4. Add a dedicated project for calendar meetings → save as `CLOCKIFY_MEETINGS=<project_id>`
+5. *(Optional)* Add a project for public holidays → save as `CLOCKIFY_PUBLICHOLIDAY=<project_id>`
+
+The bot auto-discovers all `CLOCKIFY_<NAME>` vars and passes the names to Gemini for project matching. The first one alphabetically is used as the fallback when no project matches a task.
 
 ---
 
@@ -80,7 +92,7 @@ A Slack bot that messages you every weekday at 4:45 PM and automatically logs yo
 2. Sign in with your Google account → **Create API Key**
 3. Copy the key → save as `GEMINI_API_KEY`
 
-> No billing required — the free tier is more than enough for this bot.
+> No billing required — the free tier (gemini-2.5-flash: 1,500 req/day, 15 req/min) is enough for normal daily use.
 
 ---
 
@@ -119,24 +131,36 @@ A browser window opens — sign in and allow access. The script prints a JSON bl
 | `SLACK_CHANNEL_ID` | `C...` — channel where the bot posts the daily prompt |
 | `CLOCKIFY_API_KEY` | `...` |
 | `CLOCKIFY_WORKSPACE_ID` | `...` |
-| `CLOCKIFY_DEFAULT_PROJECT_ID` | Fallback project when no name matches |
-| `CLOCKIFY_MEETINGS_PROJECT_ID` | Project for calendar meetings |
-| `CLOCKIFY_PROJECTS` | JSON map of project names → IDs (see below) |
+| `CLOCKIFY_MEETINGS` | Project ID for calendar meetings |
+| `CLOCKIFY_PUBLICHOLIDAY` | Project ID for public holidays |
+| `CLOCKIFY_<NAME>` | One var per project (e.g. `CLOCKIFY_NHLMIS`, `CLOCKIFY_INFRASTRUCTURE`) |
 | `GOOGLE_TOKEN_JSON` | `{"token":"..."}` printed by setup script |
 | `GEMINI_API_KEY` | `...` |
 | `TIMEZONE` | e.g. `Africa/Lagos` |
+| `COUNTRY_CODE` | ISO country code for public holidays (e.g. `NG`, `US`, `GB`) |
 
 4. Go to **Settings → Networking → Generate Domain** → copy your public URL
 
-**Setting up `CLOCKIFY_PROJECTS`:**
+**Setting up projects:**
 
-Add a JSON map of your project names to their Clockify IDs. Get a project ID from the Clockify URL when viewing a project.
+Add one `CLOCKIFY_<NAME>` variable per project. The name becomes the label Gemini uses to match tasks. Example:
 
 ```
-CLOCKIFY_PROJECTS={"QA Testing": "abc123", "Development": "def456", "Admin": "ghi789"}
+CLOCKIFY_NHLMIS=686698e2dcbebb4dffba691d
+CLOCKIFY_INFRASTRUCTURE=6867e8cf3aa1ec7de112cf16
+CLOCKIFY_SHELFLIFE=68a2f87ab968421b4c697d80
 ```
 
-Gemini automatically assigns each task to the right project. Tasks that don't match fall back to `CLOCKIFY_DEFAULT_PROJECT_ID`. Add as many projects as you like.
+**Improving project matching with keywords:**
+
+If Gemini doesn't assign tasks to the right project, add a `CLOCKIFY_<NAME>_KEYWORDS` var with comma-separated hints:
+
+```
+CLOCKIFY_INFRASTRUCTURE_KEYWORDS=staging release, prod release, deployment, hotfix
+CLOCKIFY_NHLMIS_KEYWORDS=regression testing, PSM, RMS, assigned tickets, QA
+```
+
+Gemini uses these hints to route tasks even when the description doesn't match the project name exactly.
 
 ---
 
@@ -172,8 +196,8 @@ Gemini automatically assigns each task to the right project. Tasks that don't ma
    |---|---|
    | Command | `/backfill` |
    | Request URL | `https://YOUR-RAILWAY-URL.railway.app/slack/commands` |
-   | Description | `Find missed days since Jan 1 — or auto-fill them with your tasks` |
-   | Usage hint | `[bug fixes, code review, testing]` |
+   | Description | `Find days with less than 8h logged — or auto-fill them with your tasks` |
+   | Usage hint | `[Regression testing, bug fixes, code review]` |
 
 4. Save and reinstall the app if prompted
 
@@ -186,11 +210,19 @@ Gemini automatically assigns each task to the right project. Tasks that don't ma
 /timesheet 2h writing test cases, 1h bug bash, 30min standup
 ```
 
-**Find and fill missed days:**
+**Find incomplete days:**
 ```
 /backfill
 ```
-The bot lists every weekday since Jan 1 with no Clockify entries, showing hours missing and any calendar meetings already on those days. Then log each missed day with:
+The bot lists every weekday since Jan 1 with less than 8 hours logged, showing how much is already there and how much is still needed. Calendar meetings on those days are noted and will be added automatically.
+
+**Auto-fill all incomplete days:**
+```
+/backfill Regression testing, bug fixes, code review
+```
+Tasks are distributed proportionally across each day's free 9am–5pm slots. Meetings are added automatically. Duplicates are skipped.
+
+**Log a specific past day manually:**
 ```
 /timesheet 2025-01-06 2h regression testing, 3h bug fixes
 ```
@@ -228,10 +260,19 @@ daily-timesheet-bot/
 **Clockify entries not appearing**
 - Double-check `CLOCKIFY_WORKSPACE_ID` (look at the URL in Clockify)
 - Verify the API key is correct
+- If your workspace has "Project required" enabled, every `CLOCKIFY_<NAME>` var must have a valid project ID
+
+**All tasks going to the wrong project**
+- Add `CLOCKIFY_<NAME>_KEYWORDS` vars so Gemini knows which task types belong to each project
+- Check Railway logs for `No project matched` warnings
 
 **Calendar meetings not logged**
 - `GOOGLE_TOKEN_JSON` may be invalid — re-run `setup_google_auth.py` and update the env var
 - Make sure Google Calendar API is enabled in Cloud Console
+
+**Gemini rate limit errors**
+- The bot uses gemini-2.5-flash (1,500 req/day free). Normal daily use is 1–2 calls per `/timesheet` and 1 call total for `/backfill` regardless of how many days it fills
+- If you hit the limit, wait until midnight UTC for the quota to reset
 
 **Timezone is wrong**
 - `TIMEZONE` must be a valid [tz database name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones), e.g.:
