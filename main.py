@@ -58,6 +58,12 @@ def process_time_entries(text, user_id, say):
 
         # Parse manual entries via Claude
         entries = parse_time_entries(text, today)
+        logger.info(f"Parsed entries: {entries}")
+
+        if not entries:
+            logger.warning("No entries parsed from text — check Gemini API key or input format")
+            say(":thinking_face: Couldn't parse any entries. Try something like: _'2h on bug fixes, 1h standup'_")
+            return
 
         # Fetch today's calendar meetings
         try:
@@ -73,13 +79,17 @@ def process_time_entries(text, user_id, say):
         cursor = tz.localize(datetime.combine(today, datetime.min.time()).replace(hour=9))
         for entry in entries:
             end = cursor + timedelta(minutes=entry["duration_minutes"])
-            if clockify.create_entry(
+            logger.info(f"Logging entry: {entry['description']} | {entry['duration_str']} | {cursor} -> {end}")
+            result = clockify.create_entry(
                 description=entry["description"],
                 start=cursor,
                 end=end,
                 project_id=os.environ.get("CLOCKIFY_DEFAULT_PROJECT_ID"),
-            ):
+            )
+            if result:
                 logged.append(f"• {entry['description']} — {entry['duration_str']}")
+            else:
+                logger.warning(f"Clockify failed to create entry: {entry['description']}")
             cursor = end
 
         # Log meetings using their real start/end times
