@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import pytz
 import logging
@@ -19,7 +20,7 @@ class ClockifyClient:
             "Content-Type": "application/json",
         }
         self._user_id: str | None = None
-        self._todays_descriptions: set | None = None  # cache for duplicate check
+        self._todays_descriptions: set | None = None
 
     def _get_user_id(self) -> str:
         if self._user_id is None:
@@ -29,7 +30,7 @@ class ClockifyClient:
         return self._user_id
 
     def get_todays_descriptions(self, work_date: date) -> set[str]:
-        """Return the set of entry descriptions already logged today."""
+        """Return the set of entry descriptions already logged on work_date."""
         if self._todays_descriptions is not None:
             return self._todays_descriptions
 
@@ -58,6 +59,53 @@ class ClockifyClient:
             self._todays_descriptions = set()
 
         return self._todays_descriptions
+
+    def get_dates_with_entries(self, start_date: date, end_date: date) -> set[date]:
+        """
+        Return the set of local dates that have at least one time entry
+        in the given range. Handles Clockify pagination automatically.
+        """
+        range_start = self.tz.localize(
+            datetime.combine(start_date, datetime.min.time())
+        ).astimezone(pytz.UTC)
+        range_end = self.tz.localize(
+            datetime.combine(end_date, datetime.max.time())
+        ).astimezone(pytz.UTC)
+
+        user_id = self._get_user_id()
+        dates_found: set[date] = set()
+        page = 1
+
+        while True:
+            try:
+                resp = requests.get(
+                    f"{self.BASE_URL}/workspaces/{self.workspace_id}/user/{user_id}/time-entries",
+                    params={
+                        "start": range_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "end": range_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "page": page,
+                        "page-size": 200,
+                    },
+                    headers=self.headers,
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                batch = resp.json()
+            except requests.RequestException as e:
+                logger.error(f"Failed to fetch Clockify entries page {page}: {e}")
+                break
+
+            for entry in batch:
+                start_str = (entry.get("timeInterval") or {}).get("start", "")
+                if start_str:
+                    entry_utc = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                    dates_found.add(entry_utc.astimezone(self.tz).date())
+
+            if len(batch) < 200:
+                break
+            page += 1
+
+        return dates_found
 
     def create_entry(
         self,
@@ -92,7 +140,6 @@ class ClockifyClient:
             )
             resp.raise_for_status()
             logger.info(f"Clockify entry created: {description}")
-            # Keep cache in sync so subsequent calls in the same session also deduplicate
             if self._todays_descriptions is not None:
                 self._todays_descriptions.add(description)
             return resp.json()

@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import logging
 from flask import Flask, request, jsonify
@@ -49,7 +50,37 @@ def send_daily_prompt():
         logger.error(f"Failed to send daily prompt: {e}")
 
 
-def process_time_entries(text, user_id, say):
+def parse_date_prefix(text: str, tz) -> tuple[date, str]:
+    """
+    Extract an optional date prefix from the command text.
+    Supports: YYYY-MM-DD, 'yesterday', weekday names (most recent occurrence).
+    Returns (target_date, remaining_text).
+    """
+    today = datetime.now(tz).date()
+
+    # YYYY-MM-DD prefix
+    m = re.match(r'^(\d{4}-\d{2}-\d{2})\s+(.+)$', text, re.DOTALL)
+    if m:
+        try:
+            return date.fromisoformat(m.group(1)), m.group(2).strip()
+        except ValueError:
+            pass
+
+    # 'yesterday' prefix
+    if text.lower().startswith("yesterday "):
+        return today - timedelta(days=1), text[10:].strip()
+
+    # Weekday name prefix (most recent past occurrence)
+    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    for i, name in enumerate(day_names):
+        if text.lower().startswith(name + " "):
+            days_ago = (today.weekday() - i) % 7 or 7
+            return today - timedelta(days=days_ago), text[len(name):].strip()
+
+    return today, text
+
+
+def process_time_entries(text, user_id, say, target_date: date = None):
     """Shared logic for processing time entries from both DMs and slash commands."""
     try:
         from clockify import ClockifyClient
@@ -57,7 +88,7 @@ def process_time_entries(text, user_id, say):
         from ai_parser import parse_time_entries
 
         tz = pytz.timezone(TIMEZONE)
-        today = datetime.now(tz).date()
+        today = target_date or datetime.now(tz).date()
 
         # Parse manual entries — pass project names so Gemini can assign them
         project_names = list(CLOCKIFY_PROJECTS.keys()) if CLOCKIFY_PROJECTS else None
@@ -129,6 +160,74 @@ def process_time_entries(text, user_id, say):
 
 
 
+def run_backfill(say):
+    """
+    Scan Clockify from Jan 1 to yesterday, find weekdays with no entries,
+    and report what's missing along with any calendar meetings for each day.
+    """
+    from clockify import ClockifyClient
+    from calendar_client import GoogleCalendarClient
+
+    tz = pytz.timezone(TIMEZONE)
+    today = datetime.now(tz).date()
+    start_of_year = date(today.year, 1, 1)
+    yesterday = today - timedelta(days=1)
+
+    say(f":mag: Scanning for missed days from *Jan 1* to *{yesterday.strftime('%b %d')}*…")
+
+    try:
+        clockify = ClockifyClient(tz)
+        calendar = GoogleCalendarClient()
+
+        # All weekdays from Jan 1 to yesterday
+        all_weekdays = []
+        current = start_of_year
+        while current <= yesterday:
+            if current.weekday() < 5:
+                all_weekdays.append(current)
+            current += timedelta(days=1)
+
+        dates_with_entries = clockify.get_dates_with_entries(start_of_year, yesterday)
+        missed_days = [d for d in all_weekdays if d not in dates_with_entries]
+
+        if not missed_days:
+            say(":white_check_mark: No missed days — you're all caught up!")
+            return
+
+        lines = [f":calendar: Found *{len(missed_days)} missed day(s)*. Here's what's on your calendar for each:\n"]
+
+        for missed_date in missed_days:
+            meetings = calendar.get_meetings_for_date(missed_date, TIMEZONE)
+            meeting_minutes = sum(m["duration_minutes"] for m in meetings)
+            work_day_minutes = 8 * 60  # 9am–5pm
+            unfilled_minutes = max(work_day_minutes - meeting_minutes, 0)
+            h, m = divmod(unfilled_minutes, 60)
+            unfilled_str = f"{h}h {m}m" if m else f"{h}h"
+
+            if meetings:
+                meeting_summary = ", ".join(f"{m['summary']} ({m['duration_str']})" for m in meetings)
+                calendar_note = f"_Calendar: {meeting_summary} — added automatically_"
+            else:
+                calendar_note = "_No meetings on calendar_"
+
+            lines.append(
+                f"• *{missed_date.strftime('%a %b %d')}* — *{unfilled_str}* to fill\n"
+                f"  {calendar_note}"
+            )
+
+        lines.append(
+            "\nTo log a day, use:\n"
+            "> `/timesheet 2025-01-06 2h regression testing, 3h bug fixes`\n"
+            "Calendar meetings will be added automatically on top."
+        )
+
+        say("\n".join(lines))
+
+    except Exception as e:
+        logger.error(f"Backfill failed: {e}", exc_info=True)
+        say(f":x: Backfill failed: {e}")
+
+
 @slack_app.command("/timesheet")
 def handle_timesheet_command(ack, say, command):
     """Handle /timesheet slash command."""
@@ -137,17 +236,30 @@ def handle_timesheet_command(ack, say, command):
     user_id = command["user_id"]
     text = (command.get("text") or "").strip()
 
+    if text == "backfill":
+        run_backfill(say)
+        return
+
     if not text:
         say(
             ":spiral_notepad: *Timesheet Bot*\n\n"
-            "Log your time like this:\n"
+            "Log today:\n"
             "> `/timesheet 2h fixing login bug, 1h code review, 30min planning`\n\n"
-            "I'll parse your entries and log them to Clockify. :clockify:"
+            "Log a specific past day:\n"
+            "> `/timesheet 2025-01-06 2h regression testing, 3h bug fixes`\n"
+            "> `/timesheet yesterday 2h regression testing`\n"
+            "> `/timesheet monday 1h standup, 3h testing`\n\n"
+            "Find missed days since Jan 1:\n"
+            "> `/timesheet backfill`"
         )
         return
 
-    say(":hourglass_flowing_sand: Processing your time entries…")
-    process_time_entries(text, user_id, say)
+    tz = pytz.timezone(TIMEZONE)
+    target_date, task_text = parse_date_prefix(text, tz)
+    date_label = "" if target_date == datetime.now(tz).date() else f" for *{target_date.strftime('%a %b %d')}*"
+
+    say(f":hourglass_flowing_sand: Processing your time entries{date_label}…")
+    process_time_entries(task_text, user_id, say, target_date=target_date)
 
 
 flask_app = Flask(__name__)

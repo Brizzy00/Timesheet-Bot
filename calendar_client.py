@@ -2,7 +2,7 @@ import os
 import json
 import pytz
 import logging
-from datetime import datetime
+from datetime import datetime, date
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -31,9 +31,13 @@ class GoogleCalendarClient:
     def get_todays_meetings(self, timezone_str: str = "UTC") -> list[dict]:
         tz = pytz.timezone(timezone_str)
         today = datetime.now(tz).date()
+        return self.get_meetings_for_date(today, timezone_str)
 
-        day_start = tz.localize(datetime.combine(today, datetime.min.time())).astimezone(pytz.UTC)
-        day_end = tz.localize(datetime.combine(today, datetime.max.time())).astimezone(pytz.UTC)
+    def get_meetings_for_date(self, target_date: date, timezone_str: str = "UTC") -> list[dict]:
+        tz = pytz.timezone(timezone_str)
+
+        day_start = tz.localize(datetime.combine(target_date, datetime.min.time())).astimezone(pytz.UTC)
+        day_end = tz.localize(datetime.combine(target_date, datetime.max.time())).astimezone(pytz.UTC)
 
         try:
             result = (
@@ -48,7 +52,7 @@ class GoogleCalendarClient:
                 .execute()
             )
         except Exception as e:
-            logger.error(f"Google Calendar API error: {e}")
+            logger.error(f"Google Calendar API error for {target_date}: {e}")
             return []
 
         meetings = []
