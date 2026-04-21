@@ -228,6 +228,13 @@ def run_backfill(say):
         say(f":x: Backfill failed: {e}")
 
 
+@slack_app.command("/backfill")
+def handle_backfill_command(ack, say):
+    """Handle /backfill slash command."""
+    ack()
+    run_backfill(say)
+
+
 @slack_app.command("/timesheet")
 def handle_timesheet_command(ack, say, command):
     """Handle /timesheet slash command."""
