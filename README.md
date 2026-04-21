@@ -20,6 +20,7 @@ A Slack bot that messages you every weekday at 4:45 PM and automatically logs yo
 | `/timesheet monday 3h QA, 1h standup` | Log time for the most recent Monday |
 | `/timesheet 2025-01-06 2h regression` | Log time for a specific date |
 | `/backfill` | Scan for missed days since Jan 1 and show what's missing |
+| `/backfill bug fixes, code review, testing` | Auto-fill all missed days using those tasks — Gemini distributes them across free slots |
 
 ---
 
@@ -171,8 +172,8 @@ Gemini automatically assigns each task to the right project. Tasks that don't ma
    |---|---|
    | Command | `/backfill` |
    | Request URL | `https://YOUR-RAILWAY-URL.railway.app/slack/commands` |
-   | Description | `Find and fill missed Clockify days since Jan 1` |
-   | Usage hint | *(leave empty)* |
+   | Description | `Find missed days since Jan 1 — or auto-fill them with your tasks` |
+   | Usage hint | `[bug fixes, code review, testing]` |
 
 4. Save and reinstall the app if prompted
 

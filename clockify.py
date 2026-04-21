@@ -29,6 +29,43 @@ class ClockifyClient:
             self._user_id = resp.json()["id"]
         return self._user_id
 
+    def get_day_intervals(self, work_date: date) -> list[tuple]:
+        """Return sorted list of (start, end) datetimes for all entries on work_date."""
+        day_start = self.tz.localize(
+            datetime.combine(work_date, datetime.min.time())
+        ).astimezone(pytz.UTC)
+        day_end = self.tz.localize(
+            datetime.combine(work_date, datetime.max.time())
+        ).astimezone(pytz.UTC)
+
+        try:
+            user_id = self._get_user_id()
+            resp = requests.get(
+                f"{self.BASE_URL}/workspaces/{self.workspace_id}/user/{user_id}/time-entries",
+                params={
+                    "start": day_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "end": day_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                },
+                headers=self.headers,
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            logger.error(f"Failed to fetch day intervals: {e}")
+            return []
+
+        intervals = []
+        for entry in resp.json():
+            interval = entry.get("timeInterval", {})
+            start_str = interval.get("start", "")
+            end_str = interval.get("end", "")
+            if start_str and end_str:
+                start = datetime.fromisoformat(start_str.replace("Z", "+00:00")).astimezone(self.tz)
+                end = datetime.fromisoformat(end_str.replace("Z", "+00:00")).astimezone(self.tz)
+                intervals.append((start, end))
+
+        return sorted(intervals, key=lambda x: x[0])
+
     def get_todays_descriptions(self, work_date: date) -> set[str]:
         """Return the set of entry descriptions already logged on work_date."""
         if self._todays_descriptions is not None:
