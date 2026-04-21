@@ -46,21 +46,8 @@ def send_daily_prompt():
         logger.error(f"Failed to send daily prompt: {e}")
 
 
-@slack_app.event("message")
-def handle_dm(event, say):
-    """Process any DM reply as a time-entry log."""
-    if event.get("bot_id") or event.get("subtype"):
-        return
-
-    user_id = event.get("user")
-    channel_type = event.get("channel_type")
-    text = (event.get("text") or "").strip()
-
-    if channel_type != "im" or user_id != SLACK_USER_ID or not text:
-        return
-
-    say(":hourglass_flowing_sand: Processing your time entries…")
-
+def process_time_entries(text, user_id, say):
+    """Shared logic for processing time entries from both DMs and slash commands."""
     try:
         from clockify import ClockifyClient
         from calendar_client import GoogleCalendarClient
@@ -121,12 +108,55 @@ def handle_dm(event, say):
         say(f":x: Something went wrong: {e}")
 
 
+@slack_app.event("message")
+def handle_dm(event, say):
+    """Process any DM reply as a time-entry log."""
+    if event.get("bot_id") or event.get("subtype"):
+        return
+
+    user_id = event.get("user")
+    channel_type = event.get("channel_type")
+    text = (event.get("text") or "").strip()
+
+    if channel_type != "im" or user_id != SLACK_USER_ID or not text:
+        return
+
+    say(":hourglass_flowing_sand: Processing your time entries…")
+    process_time_entries(text, user_id, say)
+
+
+@slack_app.command("/timesheet")
+def handle_timesheet_command(ack, say, command):
+    """Handle /timesheet slash command."""
+    ack()  # Acknowledge immediately to avoid Slack timeout
+
+    user_id = command["user_id"]
+    text = (command.get("text") or "").strip()
+
+    if not text:
+        say(
+            ":spiral_notepad: *Timesheet Bot*\n\n"
+            "Log your time like this:\n"
+            "> `/timesheet 2h fixing login bug, 1h code review, 30min planning`\n\n"
+            "I'll parse your entries and log them to Clockify. :clockify:"
+        )
+        return
+
+    say(":hourglass_flowing_sand: Processing your time entries…")
+    process_time_entries(text, user_id, say)
+
+
 flask_app = Flask(__name__)
 handler = SlackRequestHandler(slack_app)
 
 
 @flask_app.route("/slack/events", methods=["POST"])
 def slack_events():
+    return handler.handle(request)
+
+
+@flask_app.route("/slack/commands", methods=["POST"])
+def slack_commands():
     return handler.handle(request)
 
 
