@@ -17,19 +17,29 @@ def _get_model() -> genai.GenerativeModel:
     return _model
 
 
-def parse_time_entries(text: str, work_date: date) -> list[dict]:
+def parse_time_entries(text: str, work_date: date, project_names: list[str] = None) -> list[dict]:
     """
     Ask Gemini to turn a free-text work log into structured time entries.
-    Returns a list of dicts with keys: description, duration_minutes, duration_str.
+    Returns a list of dicts with keys: description, duration_minutes, duration_str, project.
     """
+    projects_section = ""
+    if project_names:
+        names = ", ".join(f'"{p}"' for p in project_names)
+        projects_section = (
+            f"\nAvailable projects: {names}\n"
+            "For each entry, pick the best matching project from that list. "
+            'Include it as the "project" field (exact name from the list, or null if none fit).'
+        )
+
     prompt = f"""Parse this work log into structured time entries.
 
 Work log: "{text}"
-
+{projects_section}
 Return a JSON array where each item has:
 - "description": string (concise task label)
 - "duration_minutes": integer
 - "duration_str": string (e.g. "2h", "45m", "1h 30m")
+- "project": string or null (matched project name, null if no projects provided or none fit)
 
 Rules:
 - "1h" = 60 min, "30m" or "30min" = 30, "1.5h" = 90, "half hour" = 30
@@ -38,12 +48,11 @@ Rules:
 - Exclude meetings — those are pulled from calendar automatically
 - Return ONLY valid JSON, no markdown or extra text
 
-Example: [{{"description": "Fixed login bug", "duration_minutes": 120, "duration_str": "2h"}}]"""
+Example: [{{"description": "Fixed login bug", "duration_minutes": 120, "duration_str": "2h", "project": "Development"}}]"""
 
     try:
         response = _get_model().generate_content(prompt)
         raw = response.text.strip()
-        # Strip optional markdown code fences
         if raw.startswith("```"):
             parts = raw.split("```")
             raw = parts[1].lstrip("json").strip() if len(parts) > 1 else raw

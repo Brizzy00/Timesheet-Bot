@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from flask import Flask, request, jsonify
 from slack_bolt import App
@@ -23,21 +24,23 @@ slack_app = App(
 )
 
 SLACK_USER_ID = os.environ["SLACK_USER_ID"]
+SLACK_CHANNEL_ID = os.environ["SLACK_CHANNEL_ID"]
 TIMEZONE = os.environ.get("TIMEZONE", "America/New_York")
+
+# Map of "Project Name" -> "clockify_project_id"
+CLOCKIFY_PROJECTS: dict[str, str] = json.loads(os.environ.get("CLOCKIFY_PROJECTS", "{}"))
 
 
 def send_daily_prompt():
-    """Fire at 4:45 PM on weekdays — DMs the user to log their day."""
+    """Fire at 4:45 PM on weekdays — posts to the configured channel."""
     logger.info("Sending daily prompt...")
     try:
-        result = slack_app.client.conversations_open(users=SLACK_USER_ID)
-        channel_id = result["channel"]["id"]
         slack_app.client.chat_postMessage(
-            channel=channel_id,
+            channel=SLACK_CHANNEL_ID,
             text=(
-                ":clock445: *End-of-day check-in!*\n\n"
-                "What did you work on today? Reply naturally, like:\n"
-                "> _2h fixing the login bug, 1h code review, 30min planning_\n\n"
+                f":clock445: <@{SLACK_USER_ID}> *End-of-day check-in!*\n\n"
+                "What did you work on today? Use `/timesheet` to log, like:\n"
+                "> `/timesheet 2h fixing the login bug, 1h code review, 30min planning`\n\n"
                 "I'll grab your calendar meetings automatically and log everything to Clockify."
             ),
         )
@@ -56,8 +59,9 @@ def process_time_entries(text, user_id, say):
         tz = pytz.timezone(TIMEZONE)
         today = datetime.now(tz).date()
 
-        # Parse manual entries via Claude
-        entries = parse_time_entries(text, today)
+        # Parse manual entries — pass project names so Gemini can assign them
+        project_names = list(CLOCKIFY_PROJECTS.keys()) if CLOCKIFY_PROJECTS else None
+        entries = parse_time_entries(text, today, project_names)
         logger.info(f"Parsed entries: {entries}")
 
         if not entries:
@@ -74,31 +78,37 @@ def process_time_entries(text, user_id, say):
 
         clockify = ClockifyClient(tz)
         logged = []
+        fallback_project = os.environ.get("CLOCKIFY_DEFAULT_PROJECT_ID")
 
         # Stack manual entries from 9 AM
         cursor = tz.localize(datetime.combine(today, datetime.min.time()).replace(hour=9))
         for entry in entries:
             end = cursor + timedelta(minutes=entry["duration_minutes"])
-            logger.info(f"Logging entry: {entry['description']} | {entry['duration_str']} | {cursor} -> {end}")
+            project_id = CLOCKIFY_PROJECTS.get(entry.get("project", ""), fallback_project)
+            project_label = entry.get("project") or "default"
+            logger.info(f"Logging entry: {entry['description']} | {entry['duration_str']} | project: {project_label}")
             result = clockify.create_entry(
                 description=entry["description"],
                 start=cursor,
                 end=end,
-                project_id=os.environ.get("CLOCKIFY_DEFAULT_PROJECT_ID"),
+                project_id=project_id,
             )
             if result:
-                logged.append(f"• {entry['description']} — {entry['duration_str']}")
+                logged.append(f"• {entry['description']} — {entry['duration_str']} _{project_label}_")
             else:
                 logger.warning(f"Clockify failed to create entry: {entry['description']}")
             cursor = end
 
-        # Log meetings using their real start/end times
-        meetings_project = os.environ.get("CLOCKIFY_MEETINGS_PROJECT_ID") or os.environ.get(
-            "CLOCKIFY_DEFAULT_PROJECT_ID"
-        )
+        # Log meetings using their real start/end times — skip any already logged today
+        meetings_project = os.environ.get("CLOCKIFY_MEETINGS_PROJECT_ID") or fallback_project
+        existing = clockify.get_todays_descriptions(today)
         for m in meetings:
+            desc = f"Meeting: {m['summary']}"
+            if desc in existing:
+                logger.info(f"Skipping duplicate meeting entry: {desc}")
+                continue
             if clockify.create_entry(
-                description=f"Meeting: {m['summary']}",
+                description=desc,
                 start=m["start_dt"],
                 end=m["end_dt"],
                 project_id=meetings_project,
@@ -117,22 +127,6 @@ def process_time_entries(text, user_id, say):
         logger.error(f"Error processing entries: {e}", exc_info=True)
         say(f":x: Something went wrong: {e}")
 
-
-@slack_app.event("message")
-def handle_dm(event, say):
-    """Process any DM reply as a time-entry log."""
-    if event.get("bot_id") or event.get("subtype"):
-        return
-
-    user_id = event.get("user")
-    channel_type = event.get("channel_type")
-    text = (event.get("text") or "").strip()
-
-    if channel_type != "im" or user_id != SLACK_USER_ID or not text:
-        return
-
-    say(":hourglass_flowing_sand: Processing your time entries…")
-    process_time_entries(text, user_id, say)
 
 
 @slack_app.command("/timesheet")

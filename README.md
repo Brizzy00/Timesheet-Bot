@@ -103,15 +103,37 @@ A browser window opens — sign in and allow access. The script prints a JSON bl
 | `SLACK_BOT_TOKEN` | `xoxb-...` |
 | `SLACK_SIGNING_SECRET` | `...` |
 | `SLACK_USER_ID` | `U...` |
+| `SLACK_CHANNEL_ID` | `C...` — channel where the bot posts the daily prompt |
 | `CLOCKIFY_API_KEY` | `...` |
 | `CLOCKIFY_WORKSPACE_ID` | `...` |
-| `CLOCKIFY_DEFAULT_PROJECT_ID` | *(optional)* |
-| `CLOCKIFY_MEETINGS_PROJECT_ID` | *(optional)* |
+| `CLOCKIFY_DEFAULT_PROJECT_ID` | Fallback project when no name matches |
+| `CLOCKIFY_MEETINGS_PROJECT_ID` | Project for calendar meetings |
+| `CLOCKIFY_PROJECTS` | JSON map of project names → IDs (see below) |
 | `GOOGLE_TOKEN_JSON` | `{"token":"..."}` |
 | `GEMINI_API_KEY` | `...` |
 | `TIMEZONE` | e.g. `Africa/Lagos` |
 
 4. Go to **Settings → Networking → Generate Domain** → copy your public URL
+
+**Setting up `CLOCKIFY_PROJECTS`:**
+
+Add a JSON map of your project names to their Clockify IDs. Get a project ID from the Clockify URL when you open a project (`clockify.me/workspaces/.../projects/PROJECT_ID/...`).
+
+```
+CLOCKIFY_PROJECTS={"QA Testing": "abc123", "Development": "def456", "Admin": "ghi789"}
+```
+
+Gemini will automatically assign each logged task to the right project based on what you wrote. Tasks that don't match any project fall back to `CLOCKIFY_DEFAULT_PROJECT_ID`. You can add as many projects as you like.
+
+---
+
+### Step 5b — Add the Bot to Your Channel
+
+1. In Slack, open the channel you want the bot to post in
+2. Click the channel name at the top → **Integrations** → **Add an App**
+3. Find your bot and add it
+4. Get the Channel ID: right-click the channel name → **Copy Link** — the ID is the part starting with `C` at the end of the URL
+   → Save it as `SLACK_CHANNEL_ID`
 
 ---
 
@@ -126,6 +148,13 @@ A browser window opens — sign in and allow access. The script prints a JSON bl
    Wait for the green **Verified** checkmark
 4. Under **Subscribe to bot events** → add `message.im`
 5. **Save Changes** and reinstall the app if prompted
+
+6. Click **Slash Commands** in the sidebar → **Create New Command**
+   - Command: `/timesheet`
+   - Request URL: `https://YOUR-RAILWAY-URL.railway.app/slack/commands`
+   - Description: `Log your time to Clockify`
+   - Usage hint: `2h bug fixes, 1h code review`
+   - Save, then reinstall the app if prompted
 
 ---
 

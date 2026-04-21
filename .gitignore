@@ -3,5 +3,3 @@ google_credentials.json
 __pycache__/
 *.pyc
 .python-version
-SETUP_GUIDE.txt
-README.md
