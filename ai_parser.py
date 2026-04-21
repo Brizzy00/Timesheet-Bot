@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import logging
 
@@ -8,6 +9,10 @@ logger = logging.getLogger(__name__)
 
 _model: genai.GenerativeModel | None = None
 
+# Sliding-window rate limiter — stay under 15 RPM (Gemini free tier limit)
+_RPM_LIMIT = 14  # one below the cap for safety
+_call_timestamps: list[float] = []
+
 
 def _get_model() -> genai.GenerativeModel:
     global _model
@@ -15,6 +20,28 @@ def _get_model() -> genai.GenerativeModel:
         genai.configure(api_key=os.environ["GEMINI_API_KEY"])
         _model = genai.GenerativeModel("gemini-2.5-flash")
     return _model
+
+
+def _throttle():
+    """Block until sending the next request stays within _RPM_LIMIT calls per 60s."""
+    now = time.time()
+    cutoff = now - 60.0
+
+    # Drop timestamps outside the rolling window
+    while _call_timestamps and _call_timestamps[0] < cutoff:
+        _call_timestamps.pop(0)
+
+    if len(_call_timestamps) >= _RPM_LIMIT:
+        wait = 60.0 - (now - _call_timestamps[0]) + 0.5
+        if wait > 0:
+            logger.info(f"Gemini rate limit: waiting {wait:.1f}s to stay under {_RPM_LIMIT} RPM…")
+            time.sleep(wait)
+        # Re-clean after sleeping
+        cutoff = time.time() - 60.0
+        while _call_timestamps and _call_timestamps[0] < cutoff:
+            _call_timestamps.pop(0)
+
+    _call_timestamps.append(time.time())
 
 
 def parse_time_entries(
@@ -97,6 +124,7 @@ With no explicit durations (placeholder 60 min each):
 ]"""
 
     try:
+        _throttle()
         response = _get_model().generate_content(prompt)
         raw = response.text.strip()
         if raw.startswith("```"):
