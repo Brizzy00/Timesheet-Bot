@@ -7,5 +7,6 @@ google-auth==2.38.0
 google-auth-oauthlib==1.2.1
 google-api-python-client==2.165.0
 python-dotenv==1.0.1
+holidays==0.57
 requests==2.32.3
 gunicorn==23.0.0

@@ -8,6 +8,7 @@ from slack_bolt.adapter.flask import SlackRequestHandler
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
+import holidays as holidays_lib
 from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
 
@@ -27,14 +28,53 @@ slack_app = App(
 SLACK_USER_ID = os.environ["SLACK_USER_ID"]
 SLACK_CHANNEL_ID = os.environ["SLACK_CHANNEL_ID"]
 TIMEZONE = os.environ.get("TIMEZONE", "America/New_York")
+COUNTRY_CODE = os.environ.get("COUNTRY_CODE", "")
 
 # Map of "Project Name" -> "clockify_project_id"
 CLOCKIFY_PROJECTS: dict[str, str] = json.loads(os.environ.get("CLOCKIFY_PROJECTS", "{}"))
 
 
+def get_holiday_name(target_date: date) -> str | None:
+    """Return the public holiday name for target_date, or None if it's a regular day."""
+    if not COUNTRY_CODE:
+        return None
+    try:
+        country_holidays = holidays_lib.country_holidays(COUNTRY_CODE, years=target_date.year)
+        return country_holidays.get(target_date)
+    except Exception as e:
+        logger.warning(f"Holiday lookup failed: {e}")
+        return None
+
+
 def send_daily_prompt():
     """Fire at 4:45 PM on weekdays — posts to the configured channel."""
     logger.info("Sending daily prompt...")
+    tz = pytz.timezone(TIMEZONE)
+    today = datetime.now(tz).date()
+
+    # Auto-log public holidays and skip the prompt
+    holiday_name = get_holiday_name(today)
+    if holiday_name:
+        try:
+            from clockify import ClockifyClient
+            clockify = ClockifyClient(tz)
+            holiday_start = tz.localize(datetime.combine(today, datetime.min.time().replace(hour=9)))
+            holiday_end = tz.localize(datetime.combine(today, datetime.min.time().replace(hour=17)))
+            clockify.create_entry(
+                description=f"Public Holiday: {holiday_name}",
+                start=holiday_start,
+                end=holiday_end,
+                project_id=os.environ.get("CLOCKIFY_PUBLICHOLIDAY"),
+            )
+            slack_app.client.chat_postMessage(
+                channel=SLACK_CHANNEL_ID,
+                text=f":beach_with_umbrella: <@{SLACK_USER_ID}> Today is *{holiday_name}* — enjoy your day off! I've logged it to Clockify automatically.",
+            )
+            logger.info(f"Public holiday logged: {holiday_name}")
+        except Exception as e:
+            logger.error(f"Failed to log public holiday: {e}")
+        return
+
     try:
         slack_app.client.chat_postMessage(
             channel=SLACK_CHANNEL_ID,
@@ -194,13 +234,29 @@ def run_backfill(say):
             say(":white_check_mark: No missed days — you're all caught up!")
             return
 
-        lines = [f":calendar: Found *{len(missed_days)} missed day(s)*. Here's what's on your calendar for each:\n"]
+        holiday_project = os.environ.get("CLOCKIFY_PUBLICHOLIDAY")
+        holidays_logged = []
+        lines = []
 
         for missed_date in missed_days:
+            # Auto-log public holidays — no user input needed
+            holiday_name = get_holiday_name(missed_date)
+            if holiday_name:
+                h_start = tz.localize(datetime.combine(missed_date, datetime.min.time().replace(hour=9)))
+                h_end = tz.localize(datetime.combine(missed_date, datetime.min.time().replace(hour=17)))
+                clockify.create_entry(
+                    description=f"Public Holiday: {holiday_name}",
+                    start=h_start,
+                    end=h_end,
+                    project_id=holiday_project,
+                )
+                holidays_logged.append(f"• *{missed_date.strftime('%a %b %d')}* — {holiday_name}")
+                continue
+
+            # Regular missed day — report it for manual entry
             meetings = calendar.get_meetings_for_date(missed_date, TIMEZONE)
             meeting_minutes = sum(m["duration_minutes"] for m in meetings)
-            work_day_minutes = 8 * 60  # 9am–5pm
-            unfilled_minutes = max(work_day_minutes - meeting_minutes, 0)
+            unfilled_minutes = max((8 * 60) - meeting_minutes, 0)
             h, m = divmod(unfilled_minutes, 60)
             unfilled_str = f"{h}h {m}m" if m else f"{h}h"
 
@@ -215,13 +271,21 @@ def run_backfill(say):
                 f"  {calendar_note}"
             )
 
-        lines.append(
-            "\nTo log a day, use:\n"
-            "> `/timesheet 2025-01-06 2h regression testing, 3h bug fixes`\n"
-            "Calendar meetings will be added automatically on top."
-        )
+        summary = []
+        if holidays_logged:
+            summary.append(":beach_with_umbrella: *Public holidays logged automatically:*\n" + "\n".join(holidays_logged))
+        if lines:
+            summary.append(
+                f":calendar: *{len(lines)} day(s) need your input:*\n" + "\n".join(lines) +
+                "\n\nTo log a day, use:\n"
+                "> `/timesheet 2025-01-06 2h regression testing, 3h bug fixes`\n"
+                "Calendar meetings will be added automatically on top."
+            )
+        if not summary:
+            say(":white_check_mark: No missed days — you're all caught up!")
+            return
 
-        say("\n".join(lines))
+        say("\n\n".join(summary))
 
     except Exception as e:
         logger.error(f"Backfill failed: {e}", exc_info=True)
