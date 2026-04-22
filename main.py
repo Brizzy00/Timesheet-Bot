@@ -90,6 +90,11 @@ def _fallback_project_id() -> str | None:
     return next(iter(CLOCKIFY_PROJECTS.values()), None)
 
 
+def _has_explicit_durations(text: str) -> bool:
+    """Return True if text contains explicit time/duration expressions like '2h', '30min', '1.5h'."""
+    return bool(re.search(r'\b\d+(\.\d+)?\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b', text, re.IGNORECASE))
+
+
 def get_holiday_name(target_date: date) -> str | None:
     """Return the public holiday name for target_date, or None if it's a regular day."""
     if not COUNTRY_CODE:
@@ -287,7 +292,7 @@ def process_time_entries(text, user_id, say, target_date: date = None):
 
         if not entries:
             logger.warning("No entries parsed from text — check Gemini API key or input format")
-            say(":thinking_face: Couldn't parse any entries. Try something like: _'2h on bug fixes, 1h standup'_")
+            say(":thinking_face: Couldn't parse any entries. Try something like: _'2h on bug fixes, 1h standup'_ or _'bug fixes, standup, code review'_")
             return
 
         # Fetch calendar meetings for the target date
@@ -301,41 +306,60 @@ def process_time_entries(text, user_id, say, target_date: date = None):
         logged = []
         fallback_project = _fallback_project_id()
 
-        # Re-parse with free slots so Gemini assigns non-overlapping times
         existing_intervals = clockify.get_day_intervals(today)
         free_slots = _calculate_free_slots(existing_intervals, meetings, today, tz)
-        if free_slots:
-            entries = parse_time_entries(text, project_names, free_slots=free_slots, project_keywords=PROJECT_KEYWORDS)
-            logger.info(f"Re-parsed with {len(free_slots)} free slot(s): {entries}")
 
-        # Log manual entries — use explicit times if provided, otherwise stack from 9 AM
-        cursor = tz.localize(datetime.combine(today, datetime.min.time()).replace(hour=9))
-        for entry in entries:
-            try:
-                if entry.get("start_time") and entry.get("end_time"):
-                    start = tz.localize(datetime.combine(today, datetime.strptime(entry["start_time"], "%H:%M").time()))
-                    end = tz.localize(datetime.combine(today, datetime.strptime(entry["end_time"], "%H:%M").time()))
+        if free_slots and not _has_explicit_durations(text):
+            # No explicit hours — proportionally fill free slots like /backfill
+            fitted = _fit_tasks_into_slots(entries, free_slots, today, tz)
+            existing_descriptions = clockify.get_todays_descriptions(today)
+            for entry, start, end in fitted:
+                desc = entry["description"]
+                if desc in existing_descriptions:
+                    logger.info(f"Skipping duplicate: {desc}")
+                    continue
+                project_id = CLOCKIFY_PROJECTS.get(entry.get("project", ""), fallback_project)
+                project_label = entry.get("project") or "default"
+                duration_str = _fmt_duration(int((end - start).total_seconds() / 60))
+                logger.info(f"Logging entry: {desc} | {duration_str} | {start.strftime('%H:%M')}–{end.strftime('%H:%M')} | project: {project_label}")
+                if clockify.create_entry(desc, start, end, project_id):
+                    logged.append(f"• {desc} — {duration_str} _{project_label}_")
                 else:
+                    logger.warning(f"Clockify failed to create entry: {desc}")
+        else:
+            # Explicit hours given — re-parse with Gemini to fit into slots if available
+            if free_slots:
+                entries = parse_time_entries(text, project_names, free_slots=free_slots, project_keywords=PROJECT_KEYWORDS)
+                logger.info(f"Re-parsed with {len(free_slots)} free slot(s): {entries}")
+
+            # Log manual entries — use explicit times if provided, otherwise stack from 9 AM
+            cursor = tz.localize(datetime.combine(today, datetime.min.time()).replace(hour=9))
+            for entry in entries:
+                try:
+                    if entry.get("start_time") and entry.get("end_time"):
+                        start = tz.localize(datetime.combine(today, datetime.strptime(entry["start_time"], "%H:%M").time()))
+                        end = tz.localize(datetime.combine(today, datetime.strptime(entry["end_time"], "%H:%M").time()))
+                    else:
+                        start = cursor
+                        end = cursor + timedelta(minutes=entry["duration_minutes"])
+                except ValueError:
                     start = cursor
                     end = cursor + timedelta(minutes=entry["duration_minutes"])
-            except ValueError:
-                start = cursor
-                end = cursor + timedelta(minutes=entry["duration_minutes"])
 
-            project_id = CLOCKIFY_PROJECTS.get(entry.get("project", ""), fallback_project)
-            project_label = entry.get("project") or "default"
-            logger.info(f"Logging entry: {entry['description']} | {entry['duration_str']} | {start.strftime('%H:%M')}–{end.strftime('%H:%M')} | project: {project_label}")
-            result = clockify.create_entry(
-                description=entry["description"],
-                start=start,
-                end=end,
-                project_id=project_id,
-            )
-            if result:
-                logged.append(f"• {entry['description']} — {entry['duration_str']} _{project_label}_")
-            else:
-                logger.warning(f"Clockify failed to create entry: {entry['description']}")
-            cursor = max(cursor, end)
+                project_id = CLOCKIFY_PROJECTS.get(entry.get("project", ""), fallback_project)
+                project_label = entry.get("project") or "default"
+                logger.info(f"Logging entry: {entry['description']} | {entry['duration_str']} | {start.strftime('%H:%M')}–{end.strftime('%H:%M')} | project: {project_label}")
+                result = clockify.create_entry(
+                    description=entry["description"],
+                    start=start,
+                    end=end,
+                    project_id=project_id,
+                )
+                if result:
+                    logged.append(f"• {entry['description']} — {entry['duration_str']} _{project_label}_")
+                else:
+                    logger.warning(f"Clockify failed to create entry: {entry['description']}")
+                cursor = max(cursor, end)
 
         # Log meetings using their real start/end times — skip any already logged today
         meetings_project = os.environ.get("CLOCKIFY_MEETINGS") or fallback_project
@@ -358,7 +382,7 @@ def process_time_entries(text, user_id, say, target_date: date = None):
         else:
             say(
                 ":thinking_face: Couldn't parse any entries. "
-                "Try something like: _'2h on bug fixes, 1h standup'_"
+                "Try something like: _'2h on bug fixes, 1h standup'_ or _'bug fixes, standup, code review'_"
             )
 
     except Exception as e:
@@ -378,23 +402,22 @@ def run_backfill(say):
     tz = pytz.timezone(TIMEZONE)
     today = datetime.now(tz).date()
     start_of_year = date(today.year, 1, 1)
-    yesterday = today - timedelta(days=1)
 
-    say(f":mag: Scanning for missed days from *Jan 1* to *{yesterday.strftime('%b %d')}*…")
+    say(f":mag: Scanning for missed days from *Jan 1* to *{today.strftime('%b %d')}*…")
 
     try:
         clockify = ClockifyClient(tz)
         calendar = GoogleCalendarClient()
 
-        # All weekdays from Jan 1 to yesterday
+        # All weekdays from Jan 1 to today
         all_weekdays = []
         current = start_of_year
-        while current <= yesterday:
+        while current <= today:
             if current.weekday() < 5:
                 all_weekdays.append(current)
             current += timedelta(days=1)
 
-        logged_minutes = clockify.get_date_logged_minutes(start_of_year, yesterday)
+        logged_minutes = clockify.get_date_logged_minutes(start_of_year, today)
         # A day needs filling if it has less than 8 hours (480 min) logged
         incomplete_days = [d for d in all_weekdays if logged_minutes.get(d, 0) < 8 * 60]
 
@@ -474,9 +497,8 @@ def run_backfill_with_tasks(tasks_text: str, say):
     tz = pytz.timezone(TIMEZONE)
     today = datetime.now(tz).date()
     start_of_year = date(today.year, 1, 1)
-    yesterday = today - timedelta(days=1)
 
-    say(f":mag: Scanning missed days from *Jan 1* to *{yesterday.strftime('%b %d')}* and filling with your tasks…")
+    say(f":mag: Scanning missed days from *Jan 1* to *{today.strftime('%b %d')}* and filling with your tasks…")
 
     try:
         clockify = ClockifyClient(tz)
@@ -488,12 +510,12 @@ def run_backfill_with_tasks(tasks_text: str, say):
 
         all_weekdays = []
         current = start_of_year
-        while current <= yesterday:
+        while current <= today:
             if current.weekday() < 5:
                 all_weekdays.append(current)
             current += timedelta(days=1)
 
-        logged_minutes = clockify.get_date_logged_minutes(start_of_year, yesterday)
+        logged_minutes = clockify.get_date_logged_minutes(start_of_year, today)
         missed_days = [d for d in all_weekdays if logged_minutes.get(d, 0) < 8 * 60]
 
         if not missed_days:
@@ -605,12 +627,13 @@ def handle_timesheet_command(ack, say, command):
     if not text:
         say(
             ":spiral_notepad: *Timesheet Bot*\n\n"
-            "Log today:\n"
-            "> `/timesheet 2h fixing login bug, 1h code review, 30min planning`\n\n"
+            "Log today (with or without hours):\n"
+            "> `/timesheet 2h fixing login bug, 1h code review, 30min planning`\n"
+            "> `/timesheet bug fixes, code review, planning` _(auto-fills your free slots)_\n\n"
             "Log a specific past day:\n"
             "> `/timesheet 2025-01-06 2h regression testing, 3h bug fixes`\n"
-            "> `/timesheet yesterday 2h regression testing`\n"
-            "> `/timesheet monday 1h standup, 3h testing`\n\n"
+            "> `/timesheet yesterday regression testing, bug fixes`\n"
+            "> `/timesheet monday standup, testing`\n\n"
             "Find missed days since Jan 1:\n"
             "> `/timesheet backfill`"
         )
