@@ -1,0 +1,8 @@
+fly.toml
+.git/
+__pycache__/
+*.pyc
+.envrc
+.venv/
+.env
+google_credentials.json
