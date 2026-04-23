@@ -190,9 +190,6 @@ class ClockifyClient:
             )
             resp.raise_for_status()
             logger.info(f"Clockify entry created: {description}")
-            entry_date = start.astimezone(self.tz).date()
-            if entry_date in self._descriptions_by_date:
-                self._descriptions_by_date[entry_date].add(description)
             return resp.json()
         except requests.RequestException as e:
             logger.error(f"Clockify error for '{description}': {e} — response: {getattr(e.response, 'text', 'n/a')}")
